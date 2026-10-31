@@ -1,0 +1,136 @@
+{
+  "schema_version": 1,
+  "plugin_id": "homex.weather_msn",
+  "name": "MSN 天气",
+  "version": "1.2.2",
+  "publisher": {
+    "id": "homex",
+    "display_name": "HOMEX Official",
+    "homepage": "https://homex.dev"
+  },
+  "type": "service_integration",
+  "runtime": "wasm",
+  "api_version": "1",
+  "description": "获取 MSN 天气（assets.msn.cn）的实时天气、逐日/逐时预报、分钟级降水临近预报、天气预警与空气质量，并给仪表盘天气卡提供快照。数据面比 Open-Meteo / 高德更全：气压、露点、紫外线（含中文描述）、能见度、体感温度、云量、阵风、空气质量等级与首要污染物都在同一次响应里。⚠ **本插件的密钥不是官方发放的**：它是 MSN 天气网页前端自己在用的那个（通过观察页面请求取得），微软随时可能轮换或加校验，失效时接口会返回 401「App authentication info not found in the security db」。所以密钥做成可配置项（默认已填实测可用值），失效时在配置页换掉即可，不用改代码。这也正是它独立成插件的原因：失效时只掉这一个源，不影响 weather（Open-Meteo / 高德）。取数失败一律如实报错，**不会偷偷退回其它数据源**——那会让人以为 MSN 还活着。",
+  "homepage": "https://homex.dev/plugins/weather-msn",
+  "changelog": "1.2.2 修 **snapshot 超时崩溃**（`PLUGIN_SANDBOX_CRASH: module closed with context deadline exceeded`，实测 2026-10-30）：snapshot 一次要串行出站 2~3 次 —— ①MSN 天气 ②locations/search 反查区级地名 ③密钥失效时还要先探测。原来 execution_timeout_ms=8000，两次出站在网络慢时直接超时，表现是\"插件明明加载成功、取数却一直回落备用源\"。提高到 15000ms，并把地名反查的超时压到 3500ms（它是**增强**不是必需：查不到就用配置城市名，不该占掉天气取数的预算）。\n\n1.2.1 修 `test_connection` **没走自动定位**：它直接读 default_latitude/longitude，而这两个值在 1.2.0 里默认已改成 0（含义是\"交给自动定位\"），于是测试连接报 target=0.0000,0.0000 —— 坐标在几内亚湾，取的是那里的天气，但界面显示 ok:true，用户会以为一切正常（实测 2026-10-30）。现在测试连接与 snapshot/forecast/hourly 共用同一套坐标解析（调用方坐标 > 配置坐标 > 出口 IP），并在响应里带 point_source。**测试入口必须与真实取数走同一条路径**，否则它测的不是用户实际会遇到的那条。\n\n1.2.0 加**全自动定位**（2026-10-30 用户要求「自动定位自动获取就好」）：① 新增 `locate` 工具：调用方给坐标就直接用并反查地名；没给就按**出口 IP** 定位（依次问 ip-api.com / ipwho.is / ipinfo.io 三家，任一家给出可用坐标即停，`source` 字段如实标出是哪家给的 —— 定位不准时能立刻知道找谁）。② snapshot/forecast/hourly/nowcasting/alerts **全部**改成三层坐标优先级：调用方坐标（浏览器 Geolocation，最准）> 配置默认坐标（用户显式设过）> 出口 IP 定位（全自动）。③ 配置默认坐标改为留 0，含义是「不配置，交给自动定位」；此时插件开箱即用，不需要用户填任何坐标。响应里的 `point_source` 标明这次用的哪一层（caller / config / ip:xxx），不让\"用了哪儿的坐标\"变成黑盒。④ 地理反查仍走 locations/search，所以自动定位后照样能显示到区（「江苏省南京市溧水区」）。为什么用出口 IP 而不是浏览器 Geolocation 做主路径：后者要用户点授权弹窗，而仪表盘卡片是\"打开就该有数\"的东西；IP 精度到城市/区，正好够天气卡片用。\n\n1.1.0 两个实质能力（2026-10-30 用户要求「MSN 是通过定位自动精确到区的」）：① **区级定位自动反查**：MSN 的天气接口本身不返回任何地名（只有经纬度），网页上那句「江苏省南京市溧水区」是页面另调 `/service/weather/locations/search` 换来的。本版照做：snapshot 用坐标反查 `locality`（区）/`adminDistrict2`（市）/`adminDistrict`（省），拼成「江苏省南京市溧水区」显示。反查失败**不降级整份快照**（用配置城市名，天气照常）—— 地名只是标注，为一条标注让整张卡变错误态是错的。该端点用**另一把 key**（`ocid=localizelocation-peregrine`），与天气取数那把不同，已分开声明。② **密钥失效自动探测**：401 时先抓 MSN 天气页、用正则扫候选 key、逐个真打验证，有可用的就完成本次取数。**但这是尽力而为而非保证**：实测 2026-10-30，页面静态 HTML 里能扫到 2 个候选 key，它们**都是 401**（属别的服务）；真正能用的那把只在浏览器运行时注入，wasm 沙箱没有 JS 引擎拿不到。所以探测失败时如实报错并给出手动更新指引，不把它包装成\"以后永远不用管\"。探测到的 key **只在本次请求生效，不写回配置**（wasm 沙箱无写密钥能力）——这是\"自动更新\"的真实边界。\n\n1.0.3 修**类型契约**错误：快照的 `icon` 输出的是 MSN 的数字代码（1/29…），而 weather 插件的契约是字符串（emoji）。前端 schema 按 string 校验，整个快照被拒并显示「天气暂时不可用：响应形状与契约不符（/dashboard/weather）：icon: Expected string, received number」（实测 2026-10-30）。现在 icon 输出 emoji 字符串，MSN 原始数字另存 icon_code 备查。至此链式切到 MSN 的三种不兼容都已修正：① 逐日字段名（1.0.1）② daily 层级（1.0.2）③ icon 类型（本版）。\n\n1.0.2 修 1.0.1 没修到的**结构层级错误**：MSN 的一天是 {hourly:[...], daily:{...}, almanac:{...}}，温度/天气文案/风/湿度/UV 全在 **daily 子对象**里，不在 day 这一层。第一版把 tempHi 等平铺在外层 ⇒ 全部解析成 null ⇒ 10 天预报整块空白。现在分两层解析（外层拿 hourly、内层 daily 拿当日汇总），并保留 1.0.1 的字段名对齐（temperature_max/min、weather_day/night 与 weather 插件同契约）。\n本版为实测驱动：修完在真实家庭上验到 10 天温度与文案都有值。\n\n1.0.1 修 1.0.0 的**字段契约不一致**：forecast 的逐日字段原来用 MSN 自己的命名（temperature_hi/lo、day_cap、night_cap），而仪表盘卡片按 weather 插件的命名读（temperature_max/min、weather_day、weather_night）—— 两套名字导致接入后 10 天预报整块显示空值（实测 2026-10-30）。现在以 weather 的名字为**契约**输出，MSN 命名作为补充字段保留。\n同时 snapshot 的 today 块也补上 temperature_max/min 兼容名。\n\n1.0.0 首个版本。数据源 MSN（assets.msn.cn/service/weather/overview），一次请求同时带回 current / forecast(10 天) / hourly / nowcasting / alerts / 空气质量，比现有 weather 插件多出气压、露点、UV（含中文描述）、能见度、体感、云量、阵风、AQI 等级与首要污染物。工具：snapshot（仪表盘卡片快照，形状与 weather 插件兼容）、forecast（逐日，含白天/夜间文案与降水/雪量/UV/湿度区间）、hourly（把 MSN 按天分组的 hourly 摊平成未来 24 小时连续序列、丢掉已过去的时刻）、nowcasting（分钟级降水临近）、alerts（天气预警）、test_connection（真实打一次上游并把密钥失效/闸门拒绝/超时/响应形状不符分开报）。配置键：enabled、api_key（密钥库托管）、api_base、app_id、ocid、city_name、default_latitude/longitude、temperature_unit、days(1-10)、refresh_minutes、timeout_ms、show_air_quality。⚠ 三处诚实边界写进代码：① 上游没给的数值一律出 null 而不是 0（夜间无 UV、部分城市无 AQI，填 0 会变成\"紫外线 0=完全没有\"\"AQI 0=空气极好\"这类假数据）；② 时间解析失败时降级而不是丢掉整条预报；③ hourly 只保留未来时刻，过去的点不进曲线。已知风险：密钥取自 MSN 网页前端，非官方发放，可能随时失效；平台需把 assets.msn.cn 加入 allowed_hosts。",
+  "permissions": [
+    "config.read",
+    "network.outbound",
+    "secret.read"
+  ],
+  "entry": {
+    "wasm": "plugin.wasm"
+  },
+  "tools": [
+    "snapshot",
+    "locate",
+    "forecast",
+    "hourly",
+    "nowcasting",
+    "alerts",
+    "test_connection"
+  ],
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "关闭后 snapshot 返回 {enabled:false}，卡片显示「未启用」而不是报错。"
+      },
+      "api_key": {
+        "type": "string",
+        "format": "password",
+        "x-secret": true,
+        "default": "",
+        "description": "MSN 接口密钥。**留空即用内置默认值**（2026-10-30 实测可用）。这个 key 不是微软发给开发者的，而是 MSN 天气网页前端自己在用的那个，微软随时可能轮换 —— 一旦「测试连接」报 401「App authentication info not found」，就去 cn.bing.com 或 msn.cn 打开天气页，从开发者工具的 weather/overview 请求里抄新的 apikey 填进来。平台把这一项加密存在密钥库，接口响应永不回显明文。"
+      },
+      "api_base": {
+        "type": "string",
+        "default": "",
+        "description": "上游基地址，留空用 https://assets.msn.cn/service/weather。只有自建代理/内网镜像才需要改；改了这个主机名也要同步加进平台出站白名单。"
+      },
+      "app_id": {
+        "type": "string",
+        "default": "",
+        "description": "与 apikey 配套的 appId，留空用内置默认。**它与 ocid 一起决定 401 还是 200**：只换 apikey 而 appId 不配套，接口照样 401，且报错文案与「key 失效」一模一样。"
+      },
+      "ocid": {
+        "type": "string",
+        "default": "",
+        "description": "调用入口标识，留空用内置默认 msftweather。⚠ 实测 `msnweather` 会稳定 401，必须 `msftweather` —— 这是排查 401 时最容易踩的坑。"
+      },
+      "city_name": {
+        "type": "string",
+        "default": "南京市",
+        "description": "城市名兜底。**自动定位成功时以反查到的区级地名为准**（如「江苏省南京市溧水区」），这一项只在定位成功但地名反查失败时才用来显示。"
+      },
+      "default_latitude": {
+        "type": "number",
+        "default": 0,
+        "minimum": -90,
+        "maximum": 90,
+        "description": "默认纬度。**留 0（默认）表示不做配置，交给自动定位**：插件会先按出口 IP 定位（依次问 ip-api.com / ipwho.is / ipinfo.io），再按坐标反查区级地名。只有在自动定位不准时才需要手动填。"
+      },
+      "default_longitude": {
+        "type": "number",
+        "default": 0,
+        "minimum": -180,
+        "maximum": 180,
+        "description": "默认经度。与 default_latitude 成对：两个都留 0 ⇒ 自动定位；只填一个 ⇒ 报错（拿配置的一半配定位的一半会拼出一个虚构位置）。"
+      },
+      "temperature_unit": {
+        "type": "string",
+        "enum": [
+          "celsius",
+          "fahrenheit"
+        ],
+        "default": "celsius",
+        "description": "温度单位。它直接传给上游的 units 参数（不是本地换算），响应里 unit 字段如实回带。"
+      },
+      "days": {
+        "type": "integer",
+        "default": 10,
+        "minimum": 1,
+        "maximum": 10,
+        "description": "预报天数。MSN 一次最多给 10 天，配更多也拿不到。"
+      },
+      "refresh_minutes": {
+        "type": "integer",
+        "default": 30,
+        "minimum": 1,
+        "maximum": 1440,
+        "description": "快照刷新间隔（平台侧快照缓存的 TTL）。"
+      },
+      "timeout_ms": {
+        "type": "integer",
+        "default": 8000,
+        "minimum": 500,
+        "maximum": 30000,
+        "description": "单次上游请求超时。MSN 的 overview 响应约 150KB，给太短会稳定超时。"
+      },
+      "show_air_quality": {
+        "type": "boolean",
+        "default": true,
+        "description": "快照要不要带空气质量（AQI / 等级 / 首要污染物）。关掉时快照里**不出现 air_quality 这个键**——「没有这个字段」与「查了但没值」是两件事。"
+      },
+      "auto_locate": {
+        "type": "boolean",
+        "default": true,
+        "description": "自动定位开关。开启（默认）时，调用方没传坐标、配置也没填坐标的情况下，插件按出口 IP 自动定位，无需任何手工配置。关闭则必须显式提供坐标，否则取数会报「没有可用坐标」。"
+      }
+    }
+  },
+  "limits": {
+    "max_memory_mb": 64,
+    "execution_timeout_ms": 15000,
+    "max_storage_kb": 32
+  },
+  "signature": {
+    "algorithm": "ed25519",
+    "key_id": "hx-weather-community",
+    "value": ""
+  }
+}
