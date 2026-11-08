@@ -2,7 +2,7 @@
   "schema_version": 1,
   "plugin_id": "homex.weather_msn",
   "name": "MSN 天气",
-  "version": "1.2.3",
+  "version": "1.2.4",
   "publisher": {
     "id": "homex",
     "display_name": "HOMEX Official",
